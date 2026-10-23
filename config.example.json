@@ -1,0 +1,12 @@
+{
+  "listen": "127.0.0.1",
+  "port": 8765,
+  "leaseSeconds": 900,
+  "leaseMaxSeconds": 7200,
+  "eventLimit": 200,
+  "browsers": [
+    { "id": "primary", "mode": "dedicated", "wsUrl": "ws://127.0.0.1:9222/session", "capacity": 1 },
+    { "id": "secondary", "mode": "dedicated", "wsUrl": "ws://127.0.0.1:9223/session", "capacity": 1 },
+    { "id": "compact", "mode": "shared", "wsUrl": "ws://127.0.0.1:9224/session", "capacity": 4 }
+  ]
+}

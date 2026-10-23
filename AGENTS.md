@@ -1,48 +1,47 @@
-# Instructions for AI deployment agents
+# AI agent deployment instructions — Firefox Hybrid BiDi Broker
 
-This repository is an open, generic browser-testing reference, with no environment-specific credentials or URLs. Read `README.md` first. Never access another person's browser profile or copy browser session data.
+Read README.md first. Deploy the **Node.js 22+** implementation in `src/`; do not deploy legacy Python files or install Selenium/geckodriver. Public and vendor-neutral: do not add private URLs, credentials, browser profiles, session exports, internal port maps or organization names to this repository.
 
-## Goal
+## Objective
 
-Deploy one localhost Firefox BiDi broker that can allocate isolated tab/storage contexts to several AI agents. Maintain one broker process with one Selenium/WebDriver session and one BiDi WebSocket. Confirm correctness before optimizing memory.
+Bring up a generic local test environment containing at least two isolated Firefox instances. Use dedicated mode to test parallel trusted inputs, then a shared instance with two user contexts to test storage separation and local input serialization. Measure the results before replacing existing browser automation.
 
-## Deployment checklist
+## Checklist
 
-1. Check that Python >=3.11, desktop Firefox, `git`, `pip` are available. On Windows with a Windows GUI Firefox, use **Windows Python**, not a headless Linux instance. Do not attach to already-running personal Firefox.
-2. Clone **only** this branch:
-   `git clone --depth 1 --single-branch --branch firefox-bidi-agent-broker https://github.com/Marica7731/mygit.git firefox-bidi-agent-broker`
-3. Create virtualenv and install `requirements.txt`.
-4. Generate a **new local** `BROKER_TOKEN` with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Keep it out of Git and shared prompts.
-5. Launch `python -m uvicorn broker:app --host 127.0.0.1 --port 8765 --workers 1`. **Do not** set `--reload` or use multiple workers.
-6. In another terminal with the same token set, run `python -m unittest discover -s tests -v`, `python demo_client.py`, and then `python benchmark.py --agents 2` and `--agents 4`.
-7. Verify the screenshot, page title and whether `network_enabled` is true; check that creating two tasks gives different browser contexts, and destroying one does not close the other.
-8. Compare measured wall-time, process RSS, action errors, and screenshots across equivalent runs. If true foreground concurrency is required, deploy a second broker on a different port, each with its own Firefox process.
+1. Confirm Node 22+, Firefox desktop, OS-approved localhost browser debugging and an interactive display. Obtain runtime from the official links in README.
+2. Check out branch `firefox-bidi-agent-broker` of `https://github.com/Marica7731/mygit`.
+3. Copy `config.example.json` to **untracked** `config.local.json`, edit separate WebSocket ports and pool capacities. Never edit sample values to match a private environment in public Git.
+4. Generate a random `BROKER_ADMIN_TOKEN` (>=24 chars) locally and supply through process environment. Never commit/log this value.
+5. Start Firefox processes with separate **disposable** profiles using `scripts/start-firefox.ps1` (Windows) or equivalent approved launch command. No attachment to personal default profiles.
+6. Run `npm test` (unit/mock checks), `npm start` (broker), and `npm run smoke` (real browser smoke). A passing unit suite **does not** imply WebDriver BiDi has worked against the target browser.
+7. Run `node scripts/benchmark.mjs 2 dedicated` then `node scripts/benchmark.mjs 4 shared` and `node scripts/benchmark.mjs 6 auto` if enough capacity exists. Compare P50/P95, working set/private memory, success rate, focus conflict and browser restart recovery.
+8. Optional external integrations (such as credential sources, extra HTTP body logging, MCP frontends) MUST be implemented as private adapters or standalone modules with explicit authorization, size limits and redaction. Keep the public core generic.
 
-## Agent operation contract
+## API expectations
 
-- Admin: `Authorization: Bearer <BROKER_TOKEN>` only for `/tasks` create and `/health`.
-- Individual task: `X-Task-Token: <task_token>` for all `tasks/{id}` endpoints.
-- Keep each task token exclusive to its agent. Persist the task ID/token locally only for the task lifetime.
-- Typical sequence: create -> navigate -> snapshot -> (screenshot if needed) -> click/type/scroll -> network -> delete.
-- Selectors should target stable identifiers. `click` requires CSS selector and uses trusted BiDi pointer events; it activates the tab and holds a process-wide input mutex.
-- `type` writes into the *currently focused* element. First `click` the intended input. For nontrivial IME input, implement and validate an OS-specific helper rather than assuming BiDi key events are equivalent to composition.
-- Snapshot / capture may expose private content. Do not upload or log it without permission.
-- For network payloads: call `POST /tasks/{id}/network/capture` **before** the request, then retrieve `request_id` from `/network`, then `GET /tasks/{id}/network/body/{request_id}`. Per-item cap default 64 KiB, max 1 MiB. Enable only when necessary. Failure to support collectors is not a fatal failure of general browsing.
-- Never fall back from an error into global raw script execution, OS shell execution, browsing-profile copying, changing system firewall settings, or sending collected credentials elsewhere.
+- `GET /v1/browsers` and `POST /v1/tasks` accept **admin token** only.
+- All `/v1/tasks/:id/...` methods accept **task token** only.
+- Task creation accepts `{mode:"auto"|"shared"|"dedicated",leaseSeconds:300}` and returns `id`, `token`, `browserId` and context identifiers.
+- Call `POST /v1/tasks/:id/renew` periodically for long-running tasks; delete on completion.
+- To fill a test input: first click a CSS selector using trusted BiDi input, then call `/type` (not synthetic events).
+- All events are task scoped and sanitized. No raw request/response bodies or HAR claim in v0.2.
 
-## Success criteria
+## Non-negotiable acceptance
 
-- The localhost broker starts and `/health` returns `alive: true`.
-- At least 2 isolated task contexts are allocated, with distinct task tokens.
-- Both can navigate and take screenshots without sharing cookies/local storage.
-- A real click, key typing, scroll and event capture pass on a test page.
-- `DELETE` removes the context without affecting another task.
-- Memory measurements report RSS and process count; quantify any claimed improvement relative to a baseline. Do **not** invent MB/percent speedups.
+- Agent A and B in **different Firefox processes** can click simultaneously without broker-global input serialization.
+- Agent A and B in **one Firefox** have different User Contexts and do not share stored test cookie values.
+- Injecting one test cookie through `/cookies` only affects its designated User Context, never the default profile.
+- Task tokens cannot be used across tasks; admin token cannot operate as a task token.
+- Closing/expiring a task removes its User Context and releases capacity.
+- A disconnected browser is marked unavailable, without blocking other nodes; recovery is attempted while idle.
+- Benchmarks explicitly report any unsupported BiDi operations as failures, not guessed success.
 
-## References
+## Troubleshooting
 
-- Firefox: https://www.mozilla.org/firefox/new/
-- Python: https://www.python.org/downloads/
-- Selenium Manager: https://www.selenium.dev/documentation/selenium_manager/
-- geckodriver: https://github.com/mozilla/geckodriver/releases
-- WebDriver BiDi: https://www.w3.org/TR/webdriver-bidi/
+- `No browser capacity`: check `/v1/browsers`, choose a less restrictive mode or add an additional disposable Firefox instance.
+- `Browser unavailable`: check that each Firefox was started with `--remote-debugging-port`, that ports are distinct, and that the port is reachable only through local loopback. If blocked by endpoint policy, seek approved configuration; do not bypass security controls.
+- `session not created`: another automation client may own that Firefox's single WebDriver session. Use a separate instance, not session theft.
+- `browsingContext` / input failures: update Firefox stable and verify on a simple local fixture first; never suppress errors to mark a test passed.
+- Background tab and OS dialogs: per-instance lock only coordinates requests *through the broker*, not unrelated desktop applications.
+
+Read [docs/MIGRATION.md](docs/MIGRATION.md) for integration architecture. Deploy incrementally, retaining the existing stable browser workflow as rollback until all tests pass.
