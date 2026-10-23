@@ -1,6 +1,6 @@
 # Firefox BiDi Multi-Agent Browser Broker (public reference implementation)
 
-One regular Firefox automation instance, **multiple isolated WebDriver BiDi User Contexts**, and a single authenticated localhost HTTP broker for AI agents. Avoid launching one full browser/profile per task. Designed for **low-memory, reproducible web UI testing**: navigation, DOM snapshots, protocol-trusted clicks / keys / scrolls, JPEG screenshots, and lightweight network metadata.
+One regular Firefox automation instance, **multiple isolated WebDriver BiDi User Contexts**, and a single authenticated localhost HTTP broker for AI agents. Avoid launching one full browser/profile per task. Designed for **low-memory, reproducible web UI testing**: navigation, DOM snapshots, protocol-trusted clicks / keys / scrolls, JPEG screenshots, and lightweight network metadata, with **optional bounded HTTP body collection**.
 
 > **Status: reference implementation / field-validation required.** Unit tests do not replace browser compatibility testing. This is *not* a turnkey enterprise proxy, network MITM, shared-login manager, or multi-machine service. Nothing in this repo contains application-specific authentication or proprietary information.
 
@@ -75,6 +75,8 @@ Expected outputs: page title, `example.jpg` screenshot, network events if suppor
 - `POST /tasks/{id}/type` task token → `{text: "hello"}` (current focused element)
 - `POST /tasks/{id}/scroll` task token → `{dx: 0, dy: 500}`
 - `GET /tasks/{id}/network?clear=true` task token → bounded request/response metadata
+- `POST /tasks/{id}/network/capture` task token → `{max_bytes: 65536}` enable per-task HTTP body collector before navigation
+- `GET /tasks/{id}/network/body/{request_id}?kind=response` task token → collected request/response bytes (string or base64), freed after read
 - `DELETE /tasks/{id}` task token → destroy User Context and its browser storage
 
 Authorization: Admin calls use `Authorization: Bearer <BROKER_TOKEN>`; task calls use `X-Task-Token: <task_token>`. Tokens should stay local and out of logs and prompts unless the receiving agent is trusted. Task IDs are opaque UUIDs; never pass one agent's token to another. Tasks are cleaned up after `BROKER_IDLE_TTL_SECONDS` of no HTTP access (default: 900 seconds). Set `BROKER_MAX_TASKS` to a safe capacity (default: 6).
@@ -98,7 +100,7 @@ curl -fsS -X POST -H "Authorization: Bearer $BROKER_TOKEN" -H 'Content-Type: app
 
 **Security and scope:** The broker has the ability to navigate arbitrary HTTP(S) sites on the machine. A bearer token is necessary but does not make it safe for public exposure; use loopback plus OS firewall and optionally a local process boundary. `/network` records URL metadata and may contain secrets in URL query strings. Screenshots and snapshots may contain private page content. Treat all outputs as sensitive and avoid forwarding them to untrusted services. No cookie extraction, credential replication, JS eval public endpoint, or arbitrary command execution is exposed. For comprehensive HAR recording, request/response editing, or TLS MITM, use a separately reviewed tool (e.g. mitmproxy) only where authorized.
 
-**Caveats:** UI events in background contexts are not universally safe; this broker activates the task tab before input and serializes operations globally. Complex IME text, drag-and-drop, native file pickers and OS dialogs are intentionally **not** implemented as reliable generic primitives. DOM snapshots exclude cross-origin frames and closed shadow roots. Network events report metadata only, not full response bodies; support depends on Firefox and geckodriver versions. Browser and driver crashes require broker restart. The demo is a smoke test, not compatibility proof for a specific site.
+**Caveats:** UI events in background contexts are not universally safe; this broker activates the task tab before input and serializes operations globally. Complex IME text, drag-and-drop, native file pickers and OS dialogs are intentionally **not** implemented as reliable generic primitives. DOM snapshots exclude cross-origin frames and closed shadow roots. Network events report metadata by default. The optional per-task body collector is bounded to 1 MiB per item, consumes extra memory, and depends on Firefox/geckodriver support (Firefox 143+ for body collection); unsupported cases return an error. For larger dumps or full HAR, use a dedicated recorder. Browser and driver crashes require broker restart. The demo is a smoke test, not compatibility proof for a specific site.
 
 ## Official downloads and reference documentation
 
@@ -114,6 +116,7 @@ curl -fsS -X POST -H "Authorization: Bearer $BROKER_TOKEN" -H 'Content-Type: app
 - WebDriver BiDi `captureScreenshot`: https://developer.mozilla.org/en-US/docs/Web/WebDriver/Reference/BiDi/Modules/browsingContext/captureScreenshot
 - WebDriver BiDi `script.evaluate`: https://developer.mozilla.org/en-US/docs/Web/WebDriver/Reference/BiDi/Modules/script/evaluate
 - WebDriver BiDi `network` module: https://developer.mozilla.org/en-US/docs/Web/WebDriver/Reference/BiDi/Modules/network
+- WebDriver BiDi network body collection specification: https://www.w3.org/TR/webdriver-bidi/#command-network-addDataCollector
 - mitmproxy (optional advanced capture): https://mitmproxy.org/
 - Firefox DevTools MCP (alternative high-level tools): https://github.com/mozilla/firefox-devtools-mcp
 
