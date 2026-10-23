@@ -13,7 +13,7 @@ import os
 import secrets
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 import uuid
 from contextlib import asynccontextmanager
 
@@ -111,6 +111,7 @@ class Task:
     touched: float = field(default_factory=time.monotonic)
     events: collections.deque = field(default_factory=lambda: collections.deque(maxlen=300))
     network_enabled: bool = True
+    collector: str | None = None
 
 
 class BrowserBroker:
@@ -227,6 +228,9 @@ class BrowserBroker:
                 return
             self.by_context.pop(t.context, None)
         # Do not hold the events lock while waiting for a BiDi response.
+        if t.collector:
+            with contextlib.suppress(BiDiFailure):
+                self.bidi.call("network.removeDataCollector", {"collector": t.collector})
         self.bidi.call("browser.removeUserContext", {"userContext": t.user_context})
 
     def sweep(self):
@@ -305,6 +309,34 @@ class BrowserBroker:
             }]})
             self.bidi.call("input.releaseActions", {"context": t.context})
 
+    def enable_capture(self, t: Task, max_bytes: int):
+        # Explicit opt-in: collecting bodies costs browser memory, so keep the
+        # limit small; metadata-only capture remains the default.
+        if t.collector:
+            return t.collector
+        result = self.bidi.call("network.addDataCollector", {
+            "dataTypes": ["request", "response"],
+            "maxEncodedDataSize": max_bytes,
+            "contexts": [t.context]
+        })
+        t.collector = result["collector"]
+        return t.collector
+
+    def get_body(self, t: Task, request_id: str, kind: str):
+        if not t.collector:
+            raise HTTPException(409, "Enable body capture before generating the request")
+        with self.lock:
+            known = any(ev["request_id"] == request_id for ev in t.events)
+        if not known:
+            raise HTTPException(404, "Request not in task's retained network events")
+        result = self.bidi.call("network.getData", {
+            "request": request_id,
+            "dataType": kind,
+            "collector": t.collector,
+            "disown": True
+        }, timeout=12)
+        return result.get("bytes", {})
+
     def memory(self):
         if not self.driver or not self.driver.service.process:
             return {}
@@ -342,6 +374,10 @@ class Click(BaseModel):
 
 class TypeText(BaseModel):
     text: str = Field(max_length=10000)
+
+
+class Capture(BaseModel):
+    max_bytes: int = Field(default=65536, ge=1024, le=1048576)
 
 
 class Scroll(BaseModel):
@@ -464,3 +500,23 @@ def network(task_id: str, clear: bool = False, x_task_token: str | None = Header
         if clear:
             t.events.clear()
     return {"network_enabled": t.network_enabled, "events": events}
+
+
+@app.post("/tasks/{task_id}/network/capture")
+def capture(task_id: str, body: Capture, x_task_token: str | None = Header(default=None)):
+    t = broker.resolve(task_id, x_task_token)
+    try:
+        broker.enable_capture(t, body.max_bytes)
+    except BiDiFailure as exc:
+        raise HTTPException(501, f"Body collection unavailable: {exc}") from exc
+    return {"body_capture_enabled": True, "max_bytes": body.max_bytes}
+
+
+@app.get("/tasks/{task_id}/network/body/{request_id}")
+def get_body(task_id: str, request_id: str, kind: Literal["request", "response"] = "response",
+             x_task_token: str | None = Header(default=None)):
+    t = broker.resolve(task_id, x_task_token)
+    try:
+        return broker.get_body(t, request_id, kind)
+    except BiDiFailure as exc:
+        raise HTTPException(502, f"Body unavailable or timed out: {exc}") from exc
